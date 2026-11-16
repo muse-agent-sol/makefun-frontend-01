@@ -1,35 +1,69 @@
-// A working makefun-frontend-01 entry (Node 22, standard library only): the frontend is this directory's app/
-// folder, plain static files a browser opens at app/index.html (ES modules, CSS, no build step), reading make.fun's
-// public API at https://make.fun/api. The program hands it in: it copies app/ and screenshots/ from beside this file
-// to /output and writes /output/dossier.json, the summary the judge reads (your screenshots, the first load's files
-// and bytes, and your source), with the vendored make.fun library. Leave vendor/makefun-frontend.ts as it is: the
-// scorer requires dossier.json to be byte for byte what its own copy writes.
+// Entry point for the makefun-frontend-01 entry.
 //
-// A starting point, not a winner: a plain board of open bounties and a page for each. Build your frontend in app/
-// (a leaderboard, profiles, speed, ease of use), put 3 PNG or JPEG screenshots of it running on live data in
-// screenshots/ (the first by name is the cover; shots.json says which views this starter's were taken of), and run it.
+// The frontend itself lives in app/ as plain static files — no build step:
+// a browser opens app/index.html and the modules read make.fun's public API
+// at https://make.fun/api. This program is only the hand-in step. It
+// assembles the submission directory (the app, the screenshots of it
+// running on live data, and a dossier.json describing both) in the folder
+// the grader points at:
 //
-// Serve it locally with `node serve.ts`, then open http://localhost:8080.
-// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+//   node main.ts                        # assembles into /output
+//   MAKEFUN_OUTPUT_DIR=out node main.ts # assembles into ./out instead
+//
+// dossier.json is produced by the vendored make.fun library and has to stay
+// byte-for-byte what that library writes, so vendor/makefun-frontend.ts is
+// imported here and never edited; the caps below are the scorer's own.
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-frontend.ts';
 
-const here = fileURLToPath(new URL('.', import.meta.url));
-const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+// The scorer's limits, mirrored so an entry it would refuse fails here
+// first: at most 160 KiB of dossier text, at most 3 screenshots of at most
+// 256 KiB each, and an app/ tree of at most 993 files and 16 MiB in total.
+const SCORER_CAPS = {
+  text_max_bytes: 160 * 1024,
+  screenshots: { max: 3, max_bytes: 256 * 1024 },
+  app_max_files: 993,
+  app_max_bytes: 16 * 1024 * 1024,
+};
 
-mkdirSync(out, { recursive: true });
-cpSync(join(here, 'app'), join(out, 'app'), { recursive: true });
-mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+// Copy a directory tree into place, one entry at a time: directories are
+// recreated (and recursed into), files are copied as-is. The entry holds
+// only regular files and directories, so nothing else needs handling.
+function copyTree(sourceDir, targetDir) {
+  mkdirSync(targetDir, { recursive: true });
+  for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
+    const source = join(sourceDir, entry.name);
+    const target = join(targetDir, entry.name);
+    if (entry.isDirectory()) {
+      copyTree(source, target);
+    } else {
+      copyFileSync(source, target);
+    }
+  }
+}
 
-// The scorer's own caps (reference/gate.json): only text_max_bytes shapes the bytes; the others refuse an entry the
-// scorer would refuse (more than 3 screenshots or one over 256 KiB; more than 993 files and directories in app/ or
-// 16 MiB of app files: app/ counts beside /output's own 1000-entry cap, its screenshots/ and dossier.json).
-writeFileSync(
-  join(out, 'dossier.json'),
-  buildDossier(out, { text_max_bytes: 163840, screenshots: { max: 3, max_bytes: 262144 }, app_max_files: 993, app_max_bytes: 16777216 }),
-);
+function assemble() {
+  const entryDir = dirname(fileURLToPath(import.meta.url));
+  const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+
+  mkdirSync(outDir, { recursive: true });
+  copyTree(join(entryDir, 'app'), join(outDir, 'app'));
+
+  // screenshots/ belongs in the submission even if this checkout has none,
+  // so its directory is always created; the images are copied when present.
+  const shotsTarget = join(outDir, 'screenshots');
+  mkdirSync(shotsTarget, { recursive: true });
+  const shotsSource = join(entryDir, 'screenshots');
+  if (existsSync(shotsSource)) {
+    copyTree(shotsSource, shotsTarget);
+  }
+
+  // The dossier is written last: it is built from the assembled tree, so
+  // the app and screenshots above must already be in their final places.
+  writeFileSync(join(outDir, 'dossier.json'), buildDossier(outDir, SCORER_CAPS));
+}
+
+assemble();
